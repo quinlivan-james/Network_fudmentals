@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+import socket
+import ssl
+import argparse
+import json
+import random
+
+from urllib.request import urlretrieve
+
+
+""" Client class represents the client side of the client server relationship
+This class implements a tcp and tls socket"""
+
+
+class Client:
+
+    def __init__(self, username, host, port=27993, s_flag=False):
+        self.port = port
+        self.host = host
+        self.words = []
+        self.prev = ""
+        self.gameId = ""
+        self.s_flag = s_flag
+        self.username = username
+
+
+    """ readfile: Reads the file of the given url
+    creates the word list for the client to guess from"""
+
+    def readFile(self):
+        url = "https://4700.network/projects/project1-words.txt"
+        filename = "words.txt"
+        file1 = urlretrieve(url, filename)
+        file = open("words.txt", "r")
+        words = file.read()
+        list_of_words = words.replace("\n", " ").split(" ")
+        self.words = list_of_words
+
+
+
+
+
+    """Loads the json message into a python dictionary for processing. This returns the the mssage as a python 
+    dictionary """
+
+    def loadMsg(self, msg):
+        loaded_msg = json.loads(msg)
+        return loaded_msg
+
+    """Method used to extract the game id and set the game id at the start of the game"""
+
+    def getStartInfo(self, msg: dict):
+        game_id = msg.get("id")
+        self.gameId = game_id
+
+    """getFlag: Dictionary 
+        getFlag: Gets the secret flag to the bye message from server and returns that message to be stored"""
+
+    def getFlag(self, msg: dict):
+        flag = msg.get("flag")
+        file = open("secret_flags.txt", "a")
+        file.write(flag)
+        file.close()
+
+    """doRetry: msg 
+        This is used when the server sends this client a retry message, this method filters the word list based on the 
+        previous guess. This then sets self.prev to the most recent guess"""
+
+    def doRetry(self, msg: dict):
+        array = msg.get("guesses")
+        word: dict = array[(len(array)) - 1]
+        marks = word.get("marks")
+        guess = word.get("word")
+        self.prev = guess
+        self.filter_words(marks)
+
+    """makeGuess makes a guess based on the current words, this method returns the json guess to send to the server"""
+
+    def makeGuess(self):
+        max = len(self.words) - 1
+        guess_index = random.randint(0, max)
+        guess_word = str(self.words[guess_index])
+        game_id = str(self.gameId)
+        guess = {"type": "guess", "id": game_id, "word": guess_word}
+        json_guess = json.dumps(guess) + "\n"
+        djson_guess = json_guess.encode("utf-8")
+        return djson_guess
+
+    """HelloMsg: Username
+    This method creates the hello message to send to the server."""
+
+    def HelloMsg(self, username: str):
+        msg = {"type": "hello", "northeastern_username": username}
+        json_msg = json.dumps(msg) + "\n"
+        return json_msg
+
+    """has_letter_at: index letter word -> Boolean
+       This method returns whether the given word has the given letter at the given index if it does it returns true, this 
+       is used as a helper method for filter_words_helper"""
+
+    def has_letter_at(self, index, letter, word: str):
+       if letter == word[index]:
+           return True
+       else:
+           return False
+
+
+    """filter_words: array 
+        This method takes in the most recently guessed word marks from the server and then filters the list for words 
+        that match the feedback from the server.
+        This is used after every retry message sent from the server"""
+
+    def filter_words(self, array):
+        i = 0
+        while i < len(array):
+            if array[i] == 2:
+                self.array_2(i, self.prev[i])
+                i += 1
+            else:
+                i += 1
+
+
+
+    """array_2: index, letter 
+    Filter words take in the letter and the index that the letter exists in the word. If a word does not have that 
+    letter at that index it is remove from the list of words available to guess from. This is used a helper function to 
+     the larger filter_words"""
+
+    def array_2(self, index, letter):
+        j = 0
+        new_list =[]
+        while j < len(self.words):
+            if self.has_letter_at(index, letter, self.words[j]):
+                new_list.append(self.words[j])
+                j += 1
+            else:
+                j += 1
+        self.words = new_list
+
+
+
+
+    """getMsgType: Gets the message type for the client and then returns the message type. This is used for the client 
+    to understand the next steps it must take next. """
+
+    def getMsgType(self, msg: dict):
+        type = msg.get("type")
+        if type == "start":
+            return "start"
+        if type == "retry":
+            return "retry"
+        if type == "bye":
+            return "bye"
+        else:
+            return "error"
+
+    """runTCPSocket runs the client server connection."""
+
+    def runTCPSocket(self):
+        self.readFile()
+        close = False
+        if not self.s_flag:
+            soct = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            soct.connect((self.host, self.port))
+            json_msg = self.HelloMsg(self.username)
+            soct.sendall(bytes(json_msg, encoding="utf-8"))
+            while not close:
+                data = ""
+                while "\n" not in data:
+                    server_byt = soct.recv(1024)
+                    msg = server_byt.decode("utf-8")
+                    data += msg
+                loaded_msg = self.loadMsg(data)
+                print(loaded_msg)
+                msg_type = self.getMsgType(loaded_msg)
+                if msg_type == "start":
+                    self.getStartInfo(loaded_msg)
+                    soct.send(self.makeGuess())
+                if msg_type == "retry":
+                    self.doRetry(loaded_msg)
+                    soct.send(self.makeGuess())
+                if msg_type == "bye":
+                    self.getFlag(loaded_msg)
+                    soct.close()
+                    close = True
+
+        else:
+            con = ssl.create_default_context()
+            ssoct = con.wrap_socket(socket.create_connection((self.host, 27994)), server_hostname=self.host)
+            json_msg = self.HelloMsg(self.username)
+            ssoct.sendall(bytes(json_msg, encoding="utf-8"))
+            while not close:
+                data = ""
+                while "\n" not in data:
+                    server_byt = ssoct.recv(1024)
+                    msg = server_byt.decode("utf-8")
+                    data += msg
+                loaded_msg = self.loadMsg(data)
+                msg_type = self.getMsgType(loaded_msg)
+                if msg_type == "start":
+                    self.getStartInfo(loaded_msg)
+                    ssoct.send(self.makeGuess())
+                if msg_type == "retry":
+                    self.doRetry(loaded_msg)
+                    ssoct.send(self.makeGuess())
+                if msg_type == "bye":
+                    self.getFlag(loaded_msg)
+                    ssoct.close()
+                    close = True
+
+
+parser = argparse.ArgumentParser(description="Run the client with the given commands",
+                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser.add_argument("-p",help= "Port for the client to connect to")
+parser.add_argument("-s", action= "store_true",help="Flag for TLS connection")
+parser.add_argument("hostname", help="Hostname of the server")
+parser.add_argument("username", help= "Username of the user")
+args = parser.parse_args()
+
+if args.username and args.hostname and args.s and args.p:
+    client = Client(args.username, args.hostname, args.p, args.s)
+    client.runTCPSocket()
+if args.username and args.hostname and args.p and not args.s:
+    client = Client(args.username, args.hostname, args.p)
+    client.runTCPSocket()
+
+if args.username and args.hostname and not args.p and not args.s:
+    client = Client(args.username, args.hostname)
+    client.runTCPSocket()
+if args.username and args.hostname and not args.p and args.s:
+    client = Client(args.username, args.hostname,s_flag=True)
+    client.runTCPSocket()
